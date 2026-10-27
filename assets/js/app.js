@@ -3,7 +3,7 @@
 // =====================================================================
 import {
   DEMO, esc, money, icon, safeUrl, waLink, socialLink, store, toast, debounce,
-  productImage, loadStore, createOrder, orderStatus,
+  productImage, loadStore, createOrder, trackOrder,
 } from './core.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -144,6 +144,7 @@ function renderChrome() {
             ${s.email ? `<li><a href="mailto:${esc(s.email)}">${esc(s.email)}</a></li>` : ''}
             ${s.address ? `<li>${esc(s.address)}</li>` : ''}
             ${s.hours ? `<li>${esc(s.hours)}</li>` : ''}
+            <li><a href="#/mi-pedido">Consultar mi pedido</a></li>
             <li><a href="#/contacto">Ver página de contacto</a></li>
           </ul>
         </div>
@@ -600,12 +601,13 @@ function pageCheckout() {
       const items = cartLines().map((l) => ({ id: l.id, qty: l.qty }));
       const res = await createOrder(customer, items, method);
       store.set('r64-customer', { ...customer, notes: '' });
-      store.set('r64-last-order', { ...res, customer, method });
+      rememberOrder({ ...res, created_at: new Date().toISOString() });
+      store.set('r64-last-order', { reference: res.reference, items: res.items });
       state.cart = []; saveCart();
       if (method === 'wompi' && res.signature) {
         location.href = wompiUrl(res, customer);
       } else {
-        location.hash = `#/pedido/${res.reference}`;
+        location.hash = orderLink(res);
       }
     } catch (err) {
       errBox.innerHTML = `<div class="alert error">${esc(err.message || 'No fue posible registrar el pedido. Intenta de nuevo.')}</div>`;
@@ -616,7 +618,7 @@ function pageCheckout() {
 
 function wompiUrl(res, c) {
   const u = new URL('https://checkout.wompi.co/p/');
-  const redirect = `${location.origin}${location.pathname}#/pedido/${res.reference}`;
+  const redirect = `${location.origin}${location.pathname}${orderLink(res)}`;
   u.searchParams.set('public-key', res.public_key);
   u.searchParams.set('currency', 'COP');
   u.searchParams.set('amount-in-cents', String(res.amount_in_cents));
@@ -630,63 +632,191 @@ function wompiUrl(res, c) {
   return u.toString();
 }
 
-function orderMessage(o) {
-  const lines = (o.items || []).map((i) => `• ${i.qty} × ${i.name} (${money(i.price * i.qty)})`).join('\n');
-  return `Hola ${S().store_name || 'Route 64'}, realicé el pedido ${o.reference}.\n${lines}\nTotal: ${money(o.total)}\nNombre: ${o.customer?.name || ''}\nCiudad: ${o.customer?.city || ''}`;
+// ---------------------------------------------------------------------
+// Pedidos del cliente (seguimiento)
+// ---------------------------------------------------------------------
+const myOrders = () => store.get('r64-orders', []);
+function rememberOrder(o) {
+  if (!o?.reference || !o?.token) return;
+  const list = myOrders().filter((x) => x.reference !== o.reference);
+  list.unshift({ reference: o.reference, token: o.token, total: o.total, created_at: o.created_at || new Date().toISOString() });
+  store.set('r64-orders', list.slice(0, 15));
+}
+const orderLink = (o) => `#/pedido/${encodeURIComponent(o.reference)}?t=${encodeURIComponent(o.token)}`;
+const shortDate = (d) => (d ? new Intl.DateTimeFormat('es-CO', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(d)) : '');
+
+const STATUS_HEAD = {
+  pendiente: ['ok', 'check', 'Pedido recibido'],
+  pagado: ['ok', 'check', 'Pago confirmado'],
+  enviado: ['ok', 'truck', 'Pedido enviado'],
+  entregado: ['ok', 'check', 'Pedido entregado'],
+  cancelado: ['', 'alert', 'Pedido cancelado'],
+};
+
+function statusText(o) {
+  if (o.status === 'pendiente') {
+    if (o.payment_method === 'transferencia') return 'Realiza el pago con los datos indicados y envía el comprobante por WhatsApp.';
+    if (o.payment_method === 'whatsapp') return 'Continúa por WhatsApp para confirmar disponibilidad, envío y pago.';
+    return 'Estamos esperando la confirmación del pago.';
+  }
+  if (o.status === 'pagado') return 'Estamos preparando tu pedido. Te avisaremos cuando sea enviado.';
+  if (o.status === 'enviado') return `Tu pedido va en camino${o.city ? ' a ' + esc(o.city) : ''}.`;
+  if (o.status === 'entregado') return 'Tu pedido figura como entregado. Gracias por tu compra.';
+  return 'Este pedido fue cancelado. Si tienes preguntas, escríbenos por WhatsApp.';
+}
+
+function timelineHTML(o) {
+  if (o.status === 'cancelado') {
+    return `<div class="timeline"><div class="step done cancel"><span class="dot">${icon('close')}</span><div><b>Cancelado</b><small>${shortDate(o.cancelled_at)}</small></div></div></div>`;
+  }
+  const order = ['pendiente', 'pagado', 'enviado', 'entregado'];
+  const idx = order.indexOf(o.status);
+  const steps = [
+    ['Pedido recibido', o.created_at],
+    ['Pago confirmado', o.paid_at],
+    ['Enviado', o.shipped_at],
+    ['Entregado', o.delivered_at],
+  ];
+  return `<div class="timeline">${steps.map(([label, date], i) => `
+    <div class="step ${i <= idx ? 'done' : ''} ${i === idx ? 'current' : ''}">
+      <span class="dot">${i <= idx ? icon('check') : ''}</span>
+      <div><b>${label}</b><small>${i <= idx ? shortDate(date) : 'Pendiente'}</small></div>
+    </div>`).join('')}</div>`;
 }
 
 async function pageOrder(ref, params) {
-  setActiveNav('-');
+  setActiveNav('mi-pedido');
   const s = S();
-  const last = store.get('r64-last-order', null);
-  const o = last && last.reference === ref ? last : { reference: ref, items: [], method: '' };
+  const saved = myOrders().find((x) => x.reference === ref);
+  const token = params.get('t') || saved?.token || '';
   const txId = params.get('id') || new URLSearchParams(location.search).get('id');
 
   view.innerHTML = `<section class="wrap"><div class="confirm" id="confirm"><div class="loader"><div class="spinner"></div></div></div></section>`;
 
+  let o = null;
+  if (token) { try { o = await trackOrder(ref, { token }); } catch { o = null; } }
+  if (!o) { pageMyOrders(ref, token ? 'No encontramos el pedido con ese enlace. Ingresa tu celular para consultarlo.' : ''); return; }
+  rememberOrder(o);
+
   let tx = null;
-  if (txId) {
-    const key = s.wompi_public_key || '';
-    const host = key.startsWith('pub_test') ? 'sandbox.wompi.co' : 'production.wompi.co';
+  if (txId && o.payment_method === 'wompi') {
+    const host = (s.wompi_public_key || '').startsWith('pub_test') ? 'sandbox.wompi.co' : 'production.wompi.co';
     try {
       const r = await fetch(`https://${host}/v1/transactions/${encodeURIComponent(txId)}`);
       if (r.ok) tx = (await r.json()).data;
     } catch { /* sin conexión con Wompi */ }
   }
-  const st = await orderStatus(ref).catch(() => null);
 
-  let head;
-  if (tx && tx.status === 'APPROVED') head = ['ok', 'check', 'Pago aprobado', 'Recibimos tu pago. Prepararemos tu pedido y te contactaremos para coordinar el envío.'];
-  else if (tx && ['DECLINED', 'VOIDED', 'ERROR'].includes(tx.status)) head = ['', 'alert', 'Pago no aprobado', 'La transacción no fue aprobada. Puedes intentarlo de nuevo o escribirnos por WhatsApp para pagar por otro medio.'];
-  else if (tx) head = ['', 'clock', 'Pago en verificación', 'La transacción está pendiente de confirmación. Te contactaremos cuando se apruebe.'];
-  else head = ['ok', 'check', 'Pedido recibido', o.method === 'whatsapp' ? 'Continúa por WhatsApp para confirmar disponibilidad, envío y pago.' : o.method === 'transferencia' ? 'Realiza el pago con los datos indicados y envía el comprobante por WhatsApp.' : 'Guarda la referencia de tu pedido.'];
+  let [cls, ic, title] = STATUS_HEAD[o.status] || STATUS_HEAD.pendiente;
+  let text = statusText(o);
+  if (tx && o.status === 'pendiente') {
+    if (tx.status === 'APPROVED') { [cls, ic, title, text] = ['ok', 'check', 'Pago aprobado', 'Recibimos tu pago. Prepararemos tu pedido y te avisaremos cuando sea enviado.']; }
+    else if (['DECLINED', 'VOIDED', 'ERROR'].includes(tx.status)) { [cls, ic, title, text] = ['', 'alert', 'Pago no aprobado', 'La transacción no fue aprobada. Puedes intentarlo de nuevo o escribirnos por WhatsApp para pagar por otro medio.']; }
+    else { [cls, ic, title, text] = ['', 'clock', 'Pago en verificación', 'La transacción está pendiente de confirmación.']; }
+  }
 
-  const wa = waLink(s.whatsapp, orderMessage(o));
-  const statusLabel = { pendiente: 'Pendiente de pago', pagado: 'Pagado', enviado: 'Enviado', entregado: 'Entregado', cancelado: 'Cancelado' };
+  const msg = `Hola ${s.store_name || 'Route 64'}, tengo una consulta sobre mi pedido ${o.reference}.`;
+  const payMsg = `Hola ${s.store_name || 'Route 64'}, realicé el pedido ${o.reference} por ${money(o.total)}. Adjunto el comprobante de pago.`;
+  const wa = waLink(s.whatsapp, o.status === 'pendiente' && o.payment_method === 'transferencia' ? payMsg : msg);
+  const tUrl = safeUrl(o.tracking_url);
+  const shareUrl = `${location.origin}${location.pathname}${orderLink(o)}`;
 
   $('#confirm').innerHTML = `
-    <div class="big-icon ${head[0]}">${icon(head[1])}</div>
-    <h1 class="page-title display">${head[2]}</h1>
-    <p class="section-sub">${head[3]}</p>
-    <div class="ref">${esc(ref)}</div>
-    ${st && !tx ? `<p class="hint">Estado: <b>${esc(statusLabel[st.status] || st.status)}</b></p>` : ''}
-    ${o.method === 'transferencia' && s.payment_instructions ? `
-      <div class="panel"><h2 class="display">Datos para el pago</h2><p class="desc" style="margin:0">${esc(s.payment_instructions)}</p>
-      <p class="hint" style="margin:10px 0 0">Valor a pagar: <b>${money(o.total)}</b> · Referencia: <b>${esc(ref)}</b></p></div>` : ''}
-    ${o.items?.length ? `
-      <div class="panel"><h2 class="display">Resumen del pedido</h2>
-        ${o.items.map((i) => `<div class="mini-line"><div class="grow"><div>${esc(i.name)}</div><small>${i.qty} × ${money(i.price)}</small></div><b>${money(i.qty * i.price)}</b></div>`).join('')}
-        <div class="totals" style="margin-top:12px">
-          <div><span>Subtotal</span><span>${money(o.subtotal)}</span></div>
-          <div><span>Envío</span><span>${o.shipping ? money(o.shipping) : 'Por confirmar / gratis'}</span></div>
-          <div class="grand"><span>Total</span><span>${money(o.total)}</span></div>
+    <div class="big-icon ${cls}">${icon(ic)}</div>
+    <h1 class="page-title display">${title}</h1>
+    <p class="section-sub">${text}</p>
+    <div class="ref">${esc(o.reference)}</div>
+
+    <div class="panel"><h2 class="display">Estado del pedido</h2>${timelineHTML(o)}</div>
+
+    ${o.status === 'enviado' || o.status === 'entregado' || o.tracking_number ? `
+      <div class="panel"><h2 class="display">Envío</h2>
+        <div class="kv">
+          ${o.carrier ? `<div>Transportadora: <b>${esc(o.carrier)}</b></div>` : ''}
+          ${o.tracking_number ? `<div>Número de guía: <b>${esc(o.tracking_number)}</b> <button class="linkish" data-copy="${esc(o.tracking_number)}">Copiar</button></div>` : '<div>El número de guía se publicará en cuanto esté disponible.</div>'}
+          <div>Destino: <b>${esc(o.city)}</b></div>
         </div>
+        ${tUrl ? `<a class="btn btn-sm" style="margin-top:14px" href="${esc(tUrl)}" target="_blank" rel="noopener">${icon('external')} Rastrear en la transportadora</a>` : ''}
       </div>` : ''}
+
+    ${o.status === 'pendiente' && o.payment_method === 'transferencia' && s.payment_instructions ? `
+      <div class="panel"><h2 class="display">Datos para el pago</h2><p class="desc" style="margin:0">${esc(s.payment_instructions)}</p>
+      <p class="hint" style="margin:10px 0 0">Valor a pagar: <b>${money(o.total)}</b> · Referencia: <b>${esc(o.reference)}</b></p></div>` : ''}
+
+    <div class="panel"><h2 class="display">Resumen</h2>
+      ${(o.items || []).map((i) => `<div class="mini-line"><div class="grow"><div>${esc(i.name)}</div><small>${i.qty} × ${money(i.price)}</small></div><b>${money(i.qty * i.price)}</b></div>`).join('')}
+      <div class="totals" style="margin-top:12px">
+        <div><span>Subtotal</span><span>${money(o.subtotal)}</span></div>
+        <div><span>Envío</span><span>${o.shipping ? money(o.shipping) : 'Por confirmar / gratis'}</span></div>
+        <div class="grand"><span>Total</span><span>${money(o.total)}</span></div>
+      </div>
+      <p class="hint" style="margin:12px 0 0">Realizado el ${shortDate(o.created_at)}</p>
+    </div>
+
+    <div class="panel"><h2 class="display">Consultar más tarde</h2>
+      <p class="hint" style="margin:0 0 12px">Guarda este enlace para volver a ver tu pedido. También puedes consultarlo en <b>Mi pedido</b> con la referencia y tu celular.</p>
+      <button class="btn btn-ghost btn-sm" data-copy="${esc(shareUrl)}">${icon('copy')} Copiar enlace del pedido</button>
+    </div>
+
     <div class="buy-row" style="justify-content:center">
-      ${wa ? `<a class="btn btn-wa" href="${esc(wa)}" target="_blank" rel="noopener">${icon('whatsapp')} ${o.method === 'transferencia' ? 'Enviar comprobante' : 'Escribir por WhatsApp'}</a>` : ''}
-      ${tx && tx.status !== 'APPROVED' && tx.status !== 'PENDING' && o.items?.length ? '<button class="btn btn-ghost" data-retry>Volver a intentar</button>' : ''}
+      ${wa ? `<a class="btn btn-wa" href="${esc(wa)}" target="_blank" rel="noopener">${icon('whatsapp')} ${o.status === 'pendiente' && o.payment_method === 'transferencia' ? 'Enviar comprobante' : 'Escribir por WhatsApp'}</a>` : ''}
+      ${tx && ['DECLINED', 'VOIDED', 'ERROR'].includes(tx.status) && o.items?.length ? `<button class="btn btn-ghost" data-retry="${esc(o.reference)}">Volver a intentar</button>` : ''}
       <a class="btn btn-ghost" href="#/catalogo">Seguir comprando</a>
     </div>`;
+  state.lastOrder = o;
+}
+
+function pageMyOrders(prefillRef = '', notice = '') {
+  setActiveNav('mi-pedido');
+  const list = myOrders();
+  view.innerHTML = `
+  <section class="wrap">
+    <div class="page-head">
+      <div class="crumbs"><a href="#/">Inicio</a> / Mi pedido</div>
+      <h1 class="page-title display">Mi pedido</h1>
+      <p class="section-sub">Consulta el estado de tu compra y el número de guía del envío.</p>
+    </div>
+    <div class="contact-grid" style="margin-top:20px">
+      <form class="panel" id="track-form" novalidate>
+        <h2 class="display">Consultar pedido</h2>
+        ${notice ? `<div class="alert info" style="margin-bottom:14px">${esc(notice)}</div>` : ''}
+        <div class="form-grid">
+          <label class="field full"><span>Referencia del pedido</span><input class="input" name="ref" placeholder="R64-261027-ABC123" value="${esc(prefillRef)}" autocapitalize="characters" required></label>
+          <label class="field full"><span>Celular registrado en la compra</span><input class="input" name="phone" inputmode="tel" placeholder="3001234567" value="${esc(store.get('r64-customer', {}).phone || '')}" required></label>
+        </div>
+        <div id="track-error" style="margin-top:12px"></div>
+        <button class="btn btn-block" type="submit" style="margin-top:12px">${icon('search')} Consultar</button>
+        <p class="hint" style="margin:10px 0 0">La referencia aparece en la confirmación de la compra y en el correo que enviamos.</p>
+      </form>
+      <div class="panel">
+        <h2 class="display">Pedidos en este dispositivo</h2>
+        ${list.length ? list.map((x) => `
+          <a class="contact-item" href="${orderLink(x)}" style="margin-bottom:10px">${icon('receipt')}
+            <div style="flex:1"><small>${shortDate(x.created_at)}</small>${esc(x.reference)}</div><b>${money(x.total)}</b></a>`).join('')
+          : '<p class="hint" style="margin:0">Aquí aparecerán los pedidos que realices desde este navegador.</p>'}
+      </div>
+    </div>
+  </section>`;
+
+  $('#track-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const ref = String(f.get('ref') || '').trim().toUpperCase();
+    const phone = String(f.get('phone') || '').trim();
+    const err = $('#track-error');
+    if (!ref || phone.replace(/\D/g, '').length < 7) { err.innerHTML = '<div class="alert error">Escribe la referencia y el celular con el que hiciste la compra.</div>'; return; }
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      const o = await trackOrder(ref, { phone });
+      if (!o) { err.innerHTML = '<div class="alert error">No encontramos un pedido con esa referencia y ese celular. Revisa los datos.</div>'; btn.disabled = false; return; }
+      rememberOrder(o);
+      location.hash = orderLink(o);
+    } catch (ex) {
+      err.innerHTML = `<div class="alert error">${esc(ex.message || 'No fue posible consultar el pedido.')}</div>`;
+      btn.disabled = false;
+    }
+  });
 }
 
 function pageContact() {
@@ -770,6 +900,7 @@ function route() {
   else if (r === 'carrito') { pageCatalog(undefined, params); openDrawer(); }
   else if (r === 'checkout') pageCheckout();
   else if (r === 'pedido') pageOrder(a, params);
+  else if (r === 'mi-pedido') pageMyOrders(params.get('ref') || '');
   else if (r === 'contacto') pageContact();
   else pageNotFound();
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -792,6 +923,12 @@ document.addEventListener('click', (e) => {
     if (!line) return;
     const n = line.qty + Number(q.dataset.d);
     if (n <= 0) { state.cart = state.cart.filter((l) => l !== line); saveCart(); renderDrawer(); } else setQty(line.id, n);
+    return;
+  }
+  const cp = t.closest('[data-copy]');
+  if (cp) {
+    const v = cp.dataset.copy;
+    (navigator.clipboard ? navigator.clipboard.writeText(v) : Promise.reject()).then(() => toast('Copiado', 'ok')).catch(() => window.prompt('Copia este texto:', v));
     return;
   }
   const retry = t.closest('[data-retry]');

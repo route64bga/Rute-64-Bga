@@ -236,13 +236,13 @@ export async function createOrder(customer, items, method) {
     const shipping = s.free_shipping_from > 0 && subtotal >= s.free_shipping_from ? 0 : s.shipping_cost;
     const reference = 'R64-DEMO-' + Math.random().toString(36).slice(2, 8).toUpperCase();
     const order = {
-      id: uid(), reference, customer_name: customer.name, customer_email: customer.email, customer_phone: customer.phone,
+      id: uid(), reference, access_token: uid(), carrier: '', tracking_number: '', tracking_url: '', email_log: [], customer_name: customer.name, customer_email: customer.email, customer_phone: customer.phone,
       document_id: customer.document, address: customer.address, city: customer.city, notes: customer.notes,
       items: lines, subtotal, shipping, total: subtotal + shipping, payment_method: method, status: 'pendiente',
       admin_notes: '', created_at: new Date().toISOString(),
     };
     demoDB.orders.unshift(order);
-    return { reference, items: lines, subtotal, shipping, total: order.total, amount_in_cents: order.total * 100, signature: null, public_key: '' };
+    return { reference, token: order.access_token, items: lines, subtotal, shipping, total: order.total, amount_in_cents: order.total * 100, signature: null, public_key: '' };
   }
   const c = await sb();
   const { data, error } = await c.rpc('create_order', { p_customer: customer, p_items: items, p_payment_method: method });
@@ -250,14 +250,18 @@ export async function createOrder(customer, items, method) {
   return data;
 }
 
-export async function orderStatus(reference) {
+// Consulta del pedido por el cliente: con el código del enlace (token) o con el celular
+export async function trackOrder(reference, { token = '', phone = '' } = {}) {
+  const ref = String(reference || '').trim();
   if (DEMO) {
-    const o = demoDB.orders.find((x) => x.reference === reference);
-    return o ? { reference, status: o.status, total: o.total } : null;
+    const digits = (v) => String(v || '').replace(/\D/g, '');
+    const o = demoDB.orders.find((x) => x.reference.toUpperCase() === ref.toUpperCase()
+      && ((token && x.access_token === token) || (digits(phone).length >= 7 && digits(x.customer_phone).slice(-7) === digits(phone).slice(-7))));
+    return o ? { ...o, token: o.access_token } : null;
   }
   const c = await sb();
-  const { data, error } = await c.rpc('order_status', { p_reference: reference });
-  if (error) return null;
+  const { data, error } = await c.rpc('track_order', { p_reference: ref, p_token: token || null, p_phone: phone || null });
+  if (error) throw new Error(error.message);
   return data;
 }
 

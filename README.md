@@ -48,6 +48,21 @@ La página queda publicada en `https://route64bga.github.io/Rute-64-Bga/` y el p
 
 Mientras no se configure Wompi, los clientes pueden pagar por transferencia o Nequi, o acordar el pago por WhatsApp.
 
+### 6. Seguimiento de pedidos y correos automáticos
+1. En **SQL Editor**, ejecutar todo el archivo `supabase/02-seguimiento-y-correos.sql`.
+2. En la cuenta de Gmail que envía los correos (route64bga@gmail.com):
+   - Activar la **verificación en dos pasos**.
+   - Crear una **contraseña de aplicación** en https://myaccount.google.com/apppasswords.
+3. En Supabase, ir a **Edge Functions → Deploy a new function → Via Editor**:
+   - Nombre: `notify-order`.
+   - Pegar el contenido de `supabase/functions/notify-order/index.ts` y pulsar **Deploy**.
+4. En **Edge Functions → Secrets**, agregar:
+   - `GMAIL_USER`: el correo de Gmail.
+   - `GMAIL_APP_PASSWORD`: la contraseña de aplicación de 16 letras.
+   - `SITE_URL`: `https://route64bga.github.io/Rute-64-Bga/`
+
+Con esto, el cliente recibe un correo cuando su pedido se registra, se paga, se envía (con la guía), se entrega o se cancela. La tienda recibe un aviso por cada pedido nuevo. El cliente puede consultar su pedido en la sección **Mi pedido** de la tienda, con la referencia y su celular, o desde el enlace del correo.
+
 ---
 
 ## Funcionamiento de los pedidos
@@ -67,4 +82,6 @@ assets/js/app.js      Lógica de la tienda
 assets/js/admin.js    Lógica del panel
 assets/img/           Logo e íconos
 supabase/schema.sql   Base de datos
+supabase/02-seguimiento-y-correos.sql  Seguimiento y correos
+supabase/functions/notify-order/       Función que envía los correos
 ```

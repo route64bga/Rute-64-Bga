@@ -596,3 +596,22 @@ a.contact-item:hover { border-color: var(--red); }
 .settings-section > p { margin: 0 0 16px; color: var(--muted); font-size: .9rem; }
 .savebar { position: sticky; bottom: 0; padding: 14px 0; background: linear-gradient(0deg, var(--bg) 70%, transparent); display: flex; justify-content: flex-end; }
 .field > span.hint { font-weight: 400; color: var(--dim); font-size: .78rem; }
+
+/* ---------- Seguimiento del pedido ---------- */
+.timeline { display: grid; gap: 0; }
+.step { position: relative; display: grid; grid-template-columns: 32px 1fr; gap: 12px; padding-bottom: 18px; }
+.step:last-child { padding-bottom: 0; }
+.step::before { content: ""; position: absolute; left: 15px; top: 30px; bottom: 0; width: 2px; background: var(--line-2); }
+.step:last-child::before { display: none; }
+.step.done::before { background: var(--ok); }
+.step.current::before { background: var(--line-2); }
+.step .dot { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); border: 2px solid var(--line-2); color: #fff; }
+.step .dot .icon { width: 16px; height: 16px; }
+.step.done .dot { background: var(--ok); border-color: var(--ok); }
+.step.current .dot { box-shadow: 0 0 0 5px rgba(34,197,94,.18); }
+.step.cancel .dot { background: var(--red); border-color: var(--red); }
+.step b { display: block; line-height: 1.2; margin-top: 5px; }
+.step small { color: var(--muted); font-size: .82rem; }
+.step:not(.done) b { color: var(--muted); }
+.email-log { font-size: .8rem; color: var(--muted); display: grid; gap: 2px; }
+.email-log .bad { color: #ff9aa1; }

@@ -214,17 +214,26 @@ function tabOrders() {
     </div>
     <div class="rows">
       ${list.length ? list.map(orderHTML).join('') : '<div class="empty">' + icon('receipt') + '<p>No hay pedidos en este estado.</p></div>'}
-    </div>`;
+    </div>
+    <datalist id="carriers">${CARRIERS.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`;
+  $('#content').querySelectorAll('[data-copy-link]').forEach((b) => b.addEventListener('click', () => {
+    const v = b.dataset.copyLink;
+    (navigator.clipboard ? navigator.clipboard.writeText(v) : Promise.reject()).then(() => toast('Enlace copiado', 'ok')).catch(() => window.prompt('Copia el enlace:', v));
+  }));
 
   $('#content').querySelectorAll('[data-of]').forEach((b) => b.addEventListener('click', () => { A.orderFilter = b.dataset.of; tabOrders(); }));
   $('#content').querySelectorAll('[data-save-order]').forEach((b) => b.addEventListener('click', async () => {
     const id = b.dataset.saveOrder;
     const box = b.closest('.order');
-    const status = $('[name=status]', box).value;
-    const admin_notes = $('[name=admin_notes]', box).value;
+    const val = (n) => $(`[name=${n}]`, box).value.trim();
+    const row = {
+      id, status: val('status'), admin_notes: val('admin_notes'),
+      carrier: val('carrier'), tracking_number: val('tracking_number'), tracking_url: safeUrl(val('tracking_url')),
+    };
+    const status = row.status;
     b.disabled = true;
     try {
-      const saved = await db.save('orders', { id, status, admin_notes });
+      const saved = await db.save('orders', row);
       A.orders = A.orders.map((o) => (o.id === id ? { ...o, ...saved } : o));
       if (['pagado', 'enviado', 'entregado', 'cancelado'].includes(status)) A.products = await db.list('products');
       toast('Pedido actualizado', 'ok');
@@ -233,15 +242,26 @@ function tabOrders() {
   }));
 }
 
+const CARRIERS = ['Servientrega', 'Interrapidísimo', 'Coordinadora', 'Envía', 'TCC', 'Deprisa', '4-72', 'Mensajería propia'];
+const siteBase = () => location.href.split('#')[0].replace(/admin\.html.*$/, '');
+const customerLink = (o) => `${siteBase()}#/pedido/${encodeURIComponent(o.reference)}?t=${encodeURIComponent(o.access_token || '')}`;
+
 function orderHTML(o) {
   const [label, cls] = STATUS[o.status] || [o.status, ''];
-  const wa = waLink(o.customer_phone, `Hola ${o.customer_name}, te escribimos de ${A.settings.store_name || 'Route 64'} sobre tu pedido ${o.reference}.`);
+  const store = A.settings.store_name || 'Route 64';
+  const guide = o.tracking_number ? ` Transportadora: ${o.carrier || '—'}. Número de guía: ${o.tracking_number}.` : '';
+  const waText = o.status === 'enviado'
+    ? `Hola ${o.customer_name}, tu pedido ${o.reference} de ${store} fue enviado.${guide} Puedes ver el estado aquí: ${customerLink(o)}`
+    : `Hola ${o.customer_name}, te escribimos de ${store} sobre tu pedido ${o.reference}. Puedes ver el estado aquí: ${customerLink(o)}`;
+  const wa = waLink(o.customer_phone, waText);
+  const log = Array.isArray(o.email_log) ? o.email_log.slice(-6).reverse() : [];
+  const KIND = { creado: 'Pedido recibido', pagado: 'Pago confirmado', enviado: 'Pedido enviado', guia: 'Guía actualizada', entregado: 'Entregado', cancelado: 'Cancelado', 'aviso-tienda': 'Aviso a la tienda' };
   return `
   <details class="order">
     <summary>
       <div>
         <div class="row-title">${esc(o.reference)} · ${esc(o.customer_name)}</div>
-        <div class="row-sub"><span>${fmtDate(o.created_at)}</span><span>${esc(o.city || '')}</span><span>${METHOD[o.payment_method] || esc(o.payment_method)}</span></div>
+        <div class="row-sub"><span>${fmtDate(o.created_at)}</span><span>${esc(o.city || '')}</span><span>${METHOD[o.payment_method] || esc(o.payment_method)}</span>${o.tracking_number ? `<span>Guía ${esc(o.tracking_number)}</span>` : ''}</div>
       </div>
       <div style="text-align:right"><b>${money(o.total)}</b><div><span class="pill ${cls}">${label}</span></div></div>
     </summary>
@@ -250,7 +270,7 @@ function orderHTML(o) {
         <div class="kv">
           <div>Cliente: <b>${esc(o.customer_name)}</b></div>
           <div>Celular: <b>${esc(o.customer_phone)}</b></div>
-          ${o.customer_email ? `<div>Correo: <b>${esc(o.customer_email)}</b></div>` : ''}
+          <div>Correo: <b>${o.customer_email ? esc(o.customer_email) : 'No registró correo'}</b></div>
           ${o.document_id ? `<div>Cédula: <b>${esc(o.document_id)}</b></div>` : ''}
         </div>
         <div class="kv">
@@ -270,12 +290,21 @@ function orderHTML(o) {
       <div class="form-grid">
         <label class="field"><span>Estado del pedido</span>
           <select class="select" name="status">${Object.entries(STATUS).map(([k, [l]]) => `<option value="${k}" ${o.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
-          <span class="hint">Al marcarlo como pagado se descuentan las unidades del inventario.</span>
+          <span class="hint">Al marcarlo como pagado o enviado se descuentan las unidades del inventario.</span>
         </label>
-        <label class="field"><span>Notas internas</span><input class="input" name="admin_notes" value="${esc(o.admin_notes || '')}" placeholder="Guía de envío, observaciones…"></label>
+        <label class="field"><span>Transportadora</span>
+          <input class="input" name="carrier" list="carriers" value="${esc(o.carrier || '')}" placeholder="Servientrega, Interrapidísimo…"></label>
+        <label class="field"><span>Número de guía</span><input class="input" name="tracking_number" value="${esc(o.tracking_number || '')}"></label>
+        <label class="field"><span>Enlace de rastreo (opcional)</span><input class="input" name="tracking_url" value="${esc(o.tracking_url || '')}" placeholder="https://…"></label>
+        <label class="field full"><span>Notas internas (no las ve el cliente)</span><input class="input" name="admin_notes" value="${esc(o.admin_notes || '')}"></label>
       </div>
+      <div class="alert info">${o.customer_email
+        ? 'Al guardar un cambio de estado o de guía, el cliente recibe un correo automático. También puede consultar el pedido en "Mi pedido".'
+        : 'El cliente no registró correo: envíale la actualización por WhatsApp. También puede consultarla en "Mi pedido" con la referencia y su celular.'}</div>
+      ${log.length ? `<div class="email-log"><b>Correos enviados</b>${log.map((l) => `<span class="${l.ok ? '' : 'bad'}">${fmtDate(l.at)} · ${esc(KIND[l.kind] || l.kind)} → ${esc(l.to)} ${l.ok ? '✓' : '✗ ' + esc(l.error || 'error')}</span>`).join('')}</div>` : ''}
       <div class="row-actions" style="justify-content:flex-end;flex-wrap:wrap">
-        ${wa ? `<a class="btn btn-wa btn-sm" href="${esc(wa)}" target="_blank" rel="noopener">${icon('whatsapp')} Escribir al cliente</a>` : ''}
+        <button class="btn btn-ghost btn-sm" data-copy-link="${esc(customerLink(o))}">${icon('copy')} Enlace del cliente</button>
+        ${wa ? `<a class="btn btn-wa btn-sm" href="${esc(wa)}" target="_blank" rel="noopener">${icon('whatsapp')} Avisar por WhatsApp</a>` : ''}
         <button class="btn btn-sm" data-save-order="${esc(o.id)}">Guardar cambios</button>
       </div>
     </div>
